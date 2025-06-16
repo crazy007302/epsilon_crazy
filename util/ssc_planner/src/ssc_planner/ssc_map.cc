@@ -95,36 +95,38 @@ ErrorType SscMap::ClearDrivingCorridor() {
   return kSuccess;
 }
 
+// 根据初始的车辆轨迹来构建时空走廊，用于后续的路径规划
 ErrorType SscMap::ConstructCorridorUsingInitialTrajectory(
     GridMap3D *p_grid, const vec_E<common::FsVehicle> &trajs) {
-  // ~ Stage I: Get seeds
+  // ~ Stage I: Get seeds   种子点生成
   vec_E<Vec3i> traj_seeds;
   int num_states = static_cast<int>(trajs.size());
   if (num_states > 1) {
     bool first_seed_determined = false;
     for (int k = 0; k < num_states; ++k) {
       std::array<decimal_t, 3> p_w = {};
+      // 自车起点和参考轨迹的第一个点的s、d、t值
       if (!first_seed_determined) {
         decimal_t s_0 = initial_fs_.vec_s[0];
         decimal_t d_0 = initial_fs_.vec_dt[0];
         decimal_t t_0 = initial_fs_.time_stamp;
         std::array<decimal_t, 3> p_w_0 = {s_0, d_0, t_0};
-        auto coord_0 = p_grid->GetCoordUsingGlobalPosition(p_w_0);
+        auto coord_0 = p_grid->GetCoordUsingGlobalPosition(p_w_0);  // frenet坐标系转换成地图坐标系
 
         decimal_t s_1 = trajs[k].frenet_state.vec_s[0];
         decimal_t d_1 = trajs[k].frenet_state.vec_dt[0];
         decimal_t t_1 = trajs[k].frenet_state.time_stamp;
         std::array<decimal_t, 3> p_w_1 = {s_1, d_1, t_1};
         auto coord_1 = p_grid->GetCoordUsingGlobalPosition(p_w_1);
-        // * remove the states out of range
+        // * remove the states out of range  是否在地图范围内
         if (!p_grid->CheckCoordInRange(coord_1)) {
           continue;
         }
-        // earlier than start time
+        // earlier than start time  时间是否是正向
         if (coord_1[2] <= 0) {
           continue;
         }
-
+        // 第一个有效种子点
         first_seed_determined = true;
         traj_seeds.push_back(Vec3i(coord_0[0], coord_0[1], coord_0[2]));
         traj_seeds.push_back(Vec3i(coord_1[0], coord_1[1], coord_1[2]));
@@ -143,7 +145,7 @@ ErrorType SscMap::ConstructCorridorUsingInitialTrajectory(
     }
   }
 
-  // ~ Stage II: Inflate cubes
+  // ~ Stage II: Inflate cubes  立方体膨胀
   common::DrivingCorridor driving_corridor;
   bool is_valid = true;
   auto seed_num = static_cast<int>(traj_seeds.size());
@@ -157,7 +159,7 @@ ErrorType SscMap::ConstructCorridorUsingInitialTrajectory(
     if (i == 0) {
       common::AxisAlignedCubeNd<int, 3> cube;
       GetInitialCubeUsingSeed(traj_seeds[i], traj_seeds[i + 1], &cube);
-      if (!CheckIfCubeIsFree(p_grid, cube)) {
+      if (!CheckIfCubeIsFree(p_grid, cube)) {  // 检查立方体内部是否有障碍物
         LOG(ERROR) << "[Ssc] SccMap - Initial cube is not free, seed id: " << i;
 
         common::DrivingCube driving_cube;
@@ -171,7 +173,7 @@ ErrorType SscMap::ConstructCorridorUsingInitialTrajectory(
         is_valid = false;
         break;
       }
-
+      // 膨胀立方体
       std::array<bool, 6> dirs_disabled = {false, false, false,
                                            false, false, false};
       InflateCubeIn3dGrid(p_grid, dirs_disabled, config_.inflate_steps, &cube);
@@ -183,6 +185,7 @@ ErrorType SscMap::ConstructCorridorUsingInitialTrajectory(
     } else {
       if (CheckIfCubeContainsSeed(driving_corridor.cubes.back().cube,
                                   traj_seeds[i])) {
+        // 当前种子点存在上一个cube中，不新建 cube，直接把当前点加入已有 cube 的种子点列表中
         driving_corridor.cubes.back().seeds.push_back(traj_seeds[i]);
         continue;
       } else {

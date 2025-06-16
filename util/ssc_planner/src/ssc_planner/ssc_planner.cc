@@ -5,6 +5,8 @@
  * @version 0.1
  * @date 2019-02
  * @copyright Copyright (c) 2019
+
+ ！！！ 主要进行单次轨迹规划
  */
 #include "ssc_planner/ssc_planner.h"
 
@@ -89,6 +91,7 @@ ErrorType SscPlanner::RunOnce() {
   static TicToc ssc_timer;
   ssc_timer.tic();
 
+  // 获取时间戳和车辆状态
   static TicToc timer_prepare;
   timer_prepare.tic();
   if (map_itf_->GetEgoVehicle(&ego_vehicle_) != kSuccess) {
@@ -97,6 +100,7 @@ ErrorType SscPlanner::RunOnce() {
   }
 
   // plan state
+  // 初始化与状态转换
   if (!has_initial_state_) {
     initial_state_ = ego_vehicle_.state();
   }
@@ -106,12 +110,16 @@ ErrorType SscPlanner::RunOnce() {
       initial_state_.velocity > cfg_.planner_cfg().low_speed_threshold()
           ? true
           : false;
+
+  // 参考路径与坐标变换
+  // 自车的局部参考车道 nav_lane_local_
   if (map_itf_->GetLocalReferenceLane(&nav_lane_local_) != kSuccess) {
     LOG(ERROR) << "[Ssc]fail to find ego lane.";
     return kWrongStatus;
   }
   stf_ = common::StateTransformer(nav_lane_local_);
 
+  // 坐标系转换与障碍物信息获取
   if (stf_.GetFrenetStateFromState(initial_state_, &initial_frenet_state_) !=
       kSuccess) {
     LOG(ERROR) << "[Ssc]fail to get init state frenet state.";
@@ -133,6 +141,7 @@ ErrorType SscPlanner::RunOnce() {
     return kWrongStatus;
   }
 
+  // 获取自车的前向轨迹和前向行为
   if (map_itf_->GetForwardTrajectories(&forward_behaviors_, &forward_trajs_,
                                        &surround_forward_trajs_) != kSuccess) {
     LOG(ERROR) << "[Ssc]fail to get forward trajectories.";
@@ -155,6 +164,8 @@ ErrorType SscPlanner::RunOnce() {
                                // ! (Maybe CPU scheduling?)
   timer_sscmap.tic();
   time_origin_ = initial_state_.time_stamp;
+
+  // 时空地图构建与轨迹生成
   p_ssc_map_->ResetSscMap(initial_frenet_state_);
   // ~ For closed-loop simulation prediction
   int num_behaviors = forward_behaviors_.size();
@@ -188,11 +199,13 @@ ErrorType SscPlanner::RunOnce() {
 
   static TicToc timer_opt;
   timer_opt.tic();
+  // 运行轨迹优化
   if (RunQpOptimization() != kSuccess) {
     LOG(ERROR) << "[Ssc]fail to optimize qp trajectories.\n";
     return kWrongStatus;
   }
 
+  // 更新当前行为的轨迹
   if (UpdateTrajectoryWithCurrentBehavior() != kSuccess) {
     LOG(ERROR) << "[Ssc]fail: current behavior "
                << static_cast<int>(ego_behavior_) << " not valid.";
@@ -224,6 +237,7 @@ ErrorType SscPlanner::RunOnce() {
   return kSuccess;
 }  // namespace planning
 
+// 在时空走廊约束下，使用贝塞尔曲线进行轨迹优化
 ErrorType SscPlanner::RunQpOptimization() {
   vec_E<vec_E<common::SpatioTemporalSemanticCubeNd<2>>> cube_list =
       p_ssc_map_->final_corridor_vec();
@@ -244,6 +258,7 @@ ErrorType SscPlanner::RunQpOptimization() {
   corridors_.clear();
   ref_states_list_.clear();
   for (int i = 0; i < static_cast<int>(cube_list.size()); i++) {
+    // 处理每个候选行为
     int beh = static_cast<int>(forward_behaviors_[i]);
     if (if_corridor_valid[i] == 0) {
       LOG(ERROR) << "[Ssc]fail: for behavior "
@@ -284,6 +299,7 @@ ErrorType SscPlanner::RunQpOptimization() {
 
     cube_list[i].back().t_ub = fs_vehicle_traj.back().frenet_state.time_stamp;
 
+    // 走廊可行性检查
     if (CorridorFeasibilityCheck(cube_list[i]) != kSuccess) {
       LOG(ERROR) << "[Ssc]fail: corridor not valid for optimization.";
       continue;
@@ -303,7 +319,7 @@ ErrorType SscPlanner::RunQpOptimization() {
     if (spline_generator.GetBezierSplineUsingCorridor(
             cube_list[i], start_constraints, end_constraints, ref_stamps,
             ref_points, cfg_.planner_cfg().weight_proximity(),
-            &bezier_spline) != kSuccess) {
+            &bezier_spline) != kSuccess) {  // 样条生成失败的情况
       if (is_lateral_independent_) {
         LOG(ERROR) << "[Ssc]fail: solver error for behavior "
                    << static_cast<int>(forward_behaviors_[i]);
