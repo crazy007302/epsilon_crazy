@@ -77,7 +77,7 @@ ErrorType SscPlanner::ReadConfig(const std::string config_path) {
   return kSuccess;
 }
 
-ErrorType SscPlanner::set_initial_state(const State& state) {
+ErrorType SscPlanner::set_initial_state(const State &state) {
   initial_state_ = state;
   has_initial_state_ = true;
   return kSuccess;
@@ -106,6 +106,7 @@ ErrorType SscPlanner::RunOnce() {
   }
   has_initial_state_ = false;
 
+  // 根据速度决定横向控制策略
   is_lateral_independent_ =
       initial_state_.velocity > cfg_.planner_cfg().low_speed_threshold()
           ? true
@@ -119,13 +120,14 @@ ErrorType SscPlanner::RunOnce() {
   }
   stf_ = common::StateTransformer(nav_lane_local_);
 
-  // 坐标系转换与障碍物信息获取
+  // 笛卡尔坐标到frenet坐标
   if (stf_.GetFrenetStateFromState(initial_state_, &initial_frenet_state_) !=
       kSuccess) {
     LOG(ERROR) << "[Ssc]fail to get init state frenet state.";
     return kWrongStatus;
   }
 
+  // 获取行为、障碍物和轨迹预测
   if (map_itf_->GetEgoDiscretBehavior(&ego_behavior_) != kSuccess) {
     LOG(ERROR) << "[Ssc]fail to get ego behavior.";
     return kWrongStatus;
@@ -141,7 +143,6 @@ ErrorType SscPlanner::RunOnce() {
     return kWrongStatus;
   }
 
-  // 获取自车的前向轨迹和前向行为
   if (map_itf_->GetForwardTrajectories(&forward_behaviors_, &forward_trajs_,
                                        &surround_forward_trajs_) != kSuccess) {
     LOG(ERROR) << "[Ssc]fail to get forward trajectories.";
@@ -151,6 +152,7 @@ ErrorType SscPlanner::RunOnce() {
   auto t_prepare = timer_prepare.toc();
   LOG(WARNING) << "[Ssc]prepare time cost: " << t_prepare << " ms";
 
+  // 对输入的数据进行状态转换
   static TicToc timer_stf;
   timer_stf.tic();
   if (StateTransformForInputData() != kSuccess) {
@@ -169,6 +171,7 @@ ErrorType SscPlanner::RunOnce() {
   p_ssc_map_->ResetSscMap(initial_frenet_state_);
   // ~ For closed-loop simulation prediction
   int num_behaviors = forward_behaviors_.size();
+  // 处理多个预测行为
   for (int i = 0; i < num_behaviors; ++i) {
     if (!cfg_.planner_cfg().is_fitting_only()) {
       if (p_ssc_map_->ConstructSscMap(surround_forward_trajs_fs_[i],
@@ -183,12 +186,14 @@ ErrorType SscPlanner::RunOnce() {
     // p_ssc_map_->InflateObstacleGrid(ego_vehicle_.param());
     // printf("[SscPlanner] InflateObstacleGrid time cost: %lf ms\n",
     //        timer_infl.toc());
+    // 为每个行为构建轨迹走廊
     if (p_ssc_map_->ConstructCorridorUsingInitialTrajectory(
             p_ssc_map_->p_3d_grid(), forward_trajs_fs_[i]) != kSuccess) {
       LOG(ERROR) << "[Ssc]fail to construct corridor for behavior " << i;
       return kWrongStatus;
     }
   }
+  // 获取最终的全局度量立方体列表
   if (kSuccess != p_ssc_map_->GetFinalGlobalMetricCubesList()) {
     LOG(ERROR) << "[Ssc]fail to get final corridor";
     return kWrongStatus;
@@ -199,7 +204,7 @@ ErrorType SscPlanner::RunOnce() {
 
   static TicToc timer_opt;
   timer_opt.tic();
-  // 运行轨迹优化
+  // 运行QP优化算法生成轨迹
   if (RunQpOptimization() != kSuccess) {
     LOG(ERROR) << "[Ssc]fail to optimize qp trajectories.\n";
     return kWrongStatus;
@@ -257,6 +262,7 @@ ErrorType SscPlanner::RunQpOptimization() {
   valid_behaviors_.clear();
   corridors_.clear();
   ref_states_list_.clear();
+
   for (int i = 0; i < static_cast<int>(cube_list.size()); i++) {
     // 处理每个候选行为
     int beh = static_cast<int>(forward_behaviors_[i]);
@@ -324,7 +330,7 @@ ErrorType SscPlanner::RunQpOptimization() {
         LOG(ERROR) << "[Ssc]fail: solver error for behavior "
                    << static_cast<int>(forward_behaviors_[i]);
         decimal_t t0 = cube_list[i].front().t_lb;
-        for (auto& cube : cube_list[i]) {
+        for (auto &cube : cube_list[i]) {
           LOG(ERROR) << std::fixed << std::setprecision(3) << "[Ssc] t: ["
                      << cube.t_lb - t0 << ", " << cube.t_ub - t0 << "], x: ["
                      << cube.p_lb[0] << ", " << cube.p_ub[0] << "], y: ["
@@ -388,6 +394,7 @@ ErrorType SscPlanner::RunQpOptimization() {
   return kSuccess;
 }
 
+// 最终轨迹选择（轨迹更新），先跟自身预测轨迹进行匹配，否则进行车道保持
 ErrorType SscPlanner::UpdateTrajectoryWithCurrentBehavior() {
   int num_valid_behaviors = static_cast<int>(valid_behaviors_.size());
   if (num_valid_behaviors < 1) {
@@ -423,7 +430,7 @@ ErrorType SscPlanner::UpdateTrajectoryWithCurrentBehavior() {
 }
 
 ErrorType SscPlanner::CorridorFeasibilityCheck(
-    const vec_E<common::SpatioTemporalSemanticCubeNd<2>>& cubes) {
+    const vec_E<common::SpatioTemporalSemanticCubeNd<2>> &cubes) {
   int num_cubes = static_cast<int>(cubes.size());
   if (num_cubes < 1) {
     LOG(ERROR) << "[Ssc]number of cubes not enough.";
@@ -597,8 +604,8 @@ ErrorType SscPlanner::StateTransformForInputData() {
 }
 
 ErrorType SscPlanner::StateTransformUsingOpenMp(
-    const vec_E<State>& global_state_vec, const vec_E<Vec2f>& global_point_vec,
-    vec_E<FrenetState>* frenet_state_vec, vec_E<Vec2f>* fs_point_vec) const {
+    const vec_E<State> &global_state_vec, const vec_E<Vec2f> &global_point_vec,
+    vec_E<FrenetState> *frenet_state_vec, vec_E<Vec2f> *fs_point_vec) const {
   int state_num = global_state_vec.size();
   int point_num = global_point_vec.size();
 
@@ -630,8 +637,8 @@ ErrorType SscPlanner::StateTransformUsingOpenMp(
 }
 
 ErrorType SscPlanner::StateTransformSingleThread(
-    const vec_E<State>& global_state_vec, const vec_E<Vec2f>& global_point_vec,
-    vec_E<FrenetState>* frenet_state_vec, vec_E<Vec2f>* fs_point_vec) const {
+    const vec_E<State> &global_state_vec, const vec_E<Vec2f> &global_point_vec,
+    vec_E<FrenetState> *frenet_state_vec, vec_E<Vec2f> *fs_point_vec) const {
   int state_num = global_state_vec.size();
   int point_num = global_point_vec.size();
   auto ptr_state_vec = frenet_state_vec->data();
@@ -653,14 +660,14 @@ ErrorType SscPlanner::StateTransformSingleThread(
   return kSuccess;
 }
 
-ErrorType SscPlanner::set_map_interface(SscPlannerMapItf* map_itf) {
+ErrorType SscPlanner::set_map_interface(SscPlannerMapItf *map_itf) {
   if (map_itf == nullptr) return kIllegalInput;
   map_itf_ = map_itf;
   map_valid_ = true;
   return kSuccess;
 }
 
-ErrorType SscPlanner::ValidateTrajectory(const FrenetTrajectory& traj) {
+ErrorType SscPlanner::ValidateTrajectory(const FrenetTrajectory &traj) {
   std::vector<decimal_t> t_vec_xy;
   common::GetRangeVector<decimal_t>(traj.begin(), traj.end(), 0.1, true,
                                     &t_vec_xy);
