@@ -107,6 +107,7 @@ ErrorType Lane::GetOrientationByArcLength(const decimal_t arc_length,
   return kSuccess;
 }
 
+// 二分法+牛顿法找到最近的s
 ErrorType Lane::GetArcLengthByVecPosition(const Vecf<LaneDim>& vec_position,
                                           decimal_t* arc_length) const {
   if (!IsValid()) {
@@ -133,6 +134,7 @@ ErrorType Lane::GetArcLengthByVecPosition(const Vecf<LaneDim>& vec_position,
   position_spline_.evaluate(s3, &final_pos);
 
   // ~ Step I: use binary search to find a initial guess
+  // 通过二分法迭代四次找到一个最近的初始点
   decimal_t d1 = (start_pos - vec_position).squaredNorm();
   decimal_t d2 = (mid_pos - vec_position).squaredNorm();
   decimal_t d3 = (final_pos - vec_position).squaredNorm();
@@ -189,7 +191,7 @@ ErrorType Lane::GetArcLengthByVecPosition(const Vecf<LaneDim>& vec_position,
 
   // printf("[XXX]initial_guess = %lf\n", initial_guess);
 
-  // ~ Step II: use Newton's method to find the local minimum
+  // ~ Step II: use Newton's method to find the local minimum 牛顿法进行精确计算
   GetArcLengthByVecPositionWithInitialGuess(vec_position, initial_guess,
                                             arc_length);
 
@@ -207,7 +209,7 @@ ErrorType Lane::GetArcLengthByVecPositionWithInitialGuess(
   const decimal_t val_ub = position_spline_.end();
 
   // ~ use Newton's method to find the local minimum
-  static constexpr decimal_t epsilon = 1e-3;
+  static constexpr decimal_t epsilon = 1e-3;  // 阈值
   static constexpr int kMaxIter = 8;
   decimal_t x = std::min(std::max(initial_guess, val_lb), val_ub);
   Vecf<LaneDim> p, dp, ddp, tmp_vec;
@@ -218,8 +220,8 @@ ErrorType Lane::GetArcLengthByVecPositionWithInitialGuess(
     position_spline_.evaluate(x, 2, &ddp);
 
     tmp_vec = p - vec_position;
-    double f_1 = tmp_vec.dot(dp);
-    double f_2 = dp.dot(dp) + tmp_vec.dot(ddp);
+    double f_1 = tmp_vec.dot(dp);                // 一阶导
+    double f_2 = dp.dot(dp) + tmp_vec.dot(ddp);  // 二阶导
     double dx = -f_1 / f_2;
 
     if (std::fabs(dx) < epsilon) {
@@ -240,7 +242,7 @@ ErrorType Lane::GetArcLengthByVecPositionWithInitialGuess(
       break;
     }
 
-    x += dx;
+    x += dx;  // 更新迭代值
   }
 
   *arc_length = x;

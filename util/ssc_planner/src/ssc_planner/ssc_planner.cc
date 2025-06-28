@@ -245,7 +245,7 @@ ErrorType SscPlanner::RunOnce() {
 // 在时空走廊约束下，使用贝塞尔曲线进行轨迹优化
 ErrorType SscPlanner::RunQpOptimization() {
   vec_E<vec_E<common::SpatioTemporalSemanticCubeNd<2>>> cube_list =
-      p_ssc_map_->final_corridor_vec();
+      p_ssc_map_->final_corridor_vec();  // 每个行为的2D时空走廊
   std::vector<int> if_corridor_valid = p_ssc_map_->if_corridor_valid();
   if (cube_list.empty()) return kWrongStatus;
   if (cube_list.size() != forward_behaviors_.size()) {
@@ -255,7 +255,7 @@ ErrorType SscPlanner::RunQpOptimization() {
                << ", forward traj " << static_cast<int>(forward_trajs_.size())
                << ", flag size " << static_cast<int>(if_corridor_valid.size());
     return kWrongStatus;
-  }
+  }  // 每个行为都对应一个走廊
 
   qp_trajs_.clear();
   primitive_trajs_.clear();
@@ -275,7 +275,11 @@ ErrorType SscPlanner::RunQpOptimization() {
 
     auto fs_vehicle_traj = forward_trajs_fs_[i];
     int num_states = static_cast<int>(fs_vehicle_traj.size());
+    /*
+      起点基于 ego_frenet_state_  s, ds, d²s
+      终点基于 fs_vehicle_traj.back()  s, ds
 
+    */
     vec_E<Vecf<2>> start_constraints;
     start_constraints.push_back(
         Vecf<2>(ego_frenet_state_.vec_s[0], ego_frenet_state_.vec_dt[0]));
@@ -305,12 +309,13 @@ ErrorType SscPlanner::RunQpOptimization() {
 
     cube_list[i].back().t_ub = fs_vehicle_traj.back().frenet_state.time_stamp;
 
-    // 走廊可行性检查
+    // 走廊可行性检查，是否存在断裂或非法约束
     if (CorridorFeasibilityCheck(cube_list[i]) != kSuccess) {
       LOG(ERROR) << "[Ssc]fail: corridor not valid for optimization.";
       continue;
     }
 
+    // 为轨迹优化提供引导点（给一个大致的目标）
     std::vector<decimal_t> ref_stamps;
     vec_E<Vecf<2>> ref_points;
     vec_E<common::FrenetState> ref_states;
@@ -322,10 +327,11 @@ ErrorType SscPlanner::RunQpOptimization() {
     }
 
     bool bezier_spline_gen_success = true;
+    // 调用贝塞尔样条轨迹，考虑起终点、参考点约束
     if (spline_generator.GetBezierSplineUsingCorridor(
             cube_list[i], start_constraints, end_constraints, ref_stamps,
             ref_points, cfg_.planner_cfg().weight_proximity(),
-            &bezier_spline) != kSuccess) {  // 样条生成失败的情况
+            &bezier_spline) != kSuccess) {  // 样条生成失败，打印错误
       if (is_lateral_independent_) {
         LOG(ERROR) << "[Ssc]fail: solver error for behavior "
                    << static_cast<int>(forward_behaviors_[i]);
@@ -374,7 +380,7 @@ ErrorType SscPlanner::RunQpOptimization() {
     }
 
     FrenetPrimitive primitive;
-    if (!is_lateral_independent_) {
+    if (!is_lateral_independent_) {  // 规划失败采用轨迹拼接，可选
       primitive.Connect(initial_frenet_state_,
                         fs_vehicle_traj.back().frenet_state,
                         initial_frenet_state_.time_stamp,
@@ -385,16 +391,16 @@ ErrorType SscPlanner::RunQpOptimization() {
 
     if (is_lateral_independent_ && !bezier_spline_gen_success) continue;
     // printf("[SscQP]spline begin stamp: %lf.\n", bezier_spline.begin());
-    qp_trajs_.push_back(bezier_spline);
-    primitive_trajs_.push_back(primitive);
-    corridors_.push_back(cube_list[i]);
+    qp_trajs_.push_back(bezier_spline);     // 贝塞尔轨迹
+    primitive_trajs_.push_back(primitive);  // 备用轨迹
+    corridors_.push_back(cube_list[i]);     // 每个行为对应的走廊
     ref_states_list_.push_back(ref_states);
-    valid_behaviors_.push_back(forward_behaviors_[i]);
+    valid_behaviors_.push_back(forward_behaviors_[i]);  // 行为和轨迹一一对应
   }
   return kSuccess;
 }
 
-// 最终轨迹选择（轨迹更新），先跟自身预测轨迹进行匹配，否则进行车道保持
+// 最终轨迹选择（每个轨迹都对应了一个行为），先跟根据自车行为查找对应的轨迹，否则进行车道保持
 ErrorType SscPlanner::UpdateTrajectoryWithCurrentBehavior() {
   int num_valid_behaviors = static_cast<int>(valid_behaviors_.size());
   if (num_valid_behaviors < 1) {
@@ -429,6 +435,7 @@ ErrorType SscPlanner::UpdateTrajectoryWithCurrentBehavior() {
   return kSuccess;
 }
 
+// 走廊可行性检查，是否存在断裂等
 ErrorType SscPlanner::CorridorFeasibilityCheck(
     const vec_E<common::SpatioTemporalSemanticCubeNd<2>> &cubes) {
   int num_cubes = static_cast<int>(cubes.size());
@@ -453,13 +460,15 @@ ErrorType SscPlanner::CorridorFeasibilityCheck(
   return kSuccess;
 }
 
+// 将所有需要参与规划的 状态数据（State）和空间点（如车辆轮廓、障碍物等），从
+// 全局笛卡尔坐标系 转换到 Frenet 坐标系
 ErrorType SscPlanner::StateTransformForInputData() {
   vec_E<State> global_state_vec;
   vec_E<Vec2f> global_point_vec;
   int num_v;
 
   // ~ Stage I. Package states and points
-  // * Ego vehicle state and vertices
+  // * Ego vehicle state and vertices 自车状态和顶点
   {
     global_state_vec.push_back(initial_state_);
     vec_E<Vec2f> v_vec;
@@ -469,7 +478,7 @@ ErrorType SscPlanner::StateTransformForInputData() {
     global_point_vec.insert(global_point_vec.end(), v_vec.begin(), v_vec.end());
   }
 
-  // * Ego forward simulation trajs states and vertices
+  // * Ego forward simulation trajs states and vertices 自车的预测轨迹
   {
     common::VehicleParam ego_param = ego_vehicle_.param();
     for (int i = 0; i < (int)forward_trajs_.size(); ++i) {
@@ -488,7 +497,7 @@ ErrorType SscPlanner::StateTransformForInputData() {
     }
   }
 
-  // * Surrounding vehicle trajs from MPDM
+  // * Surrounding vehicle trajs from MPDM 周围动态障碍物的轨迹和顶点
   {
     for (int i = 0; i < surround_forward_trajs_.size(); ++i) {
       for (auto it = surround_forward_trajs_[i].begin();
@@ -508,7 +517,7 @@ ErrorType SscPlanner::StateTransformForInputData() {
     }
   }
 
-  // * Obstacle grids
+  // * Obstacle grids  静态障碍物的点，不需要状态
   {
     for (auto it = obstacle_grids_.begin(); it != obstacle_grids_.end(); ++it) {
       Vec2f pt((*it)[0], (*it)[1]);
@@ -519,13 +528,13 @@ ErrorType SscPlanner::StateTransformForInputData() {
   vec_E<FrenetState> frenet_state_vec(global_state_vec.size());
   vec_E<Vec2f> fs_point_vec(global_point_vec.size());
 
-  // ~ Stage II. Do transformation in multi-thread flavor
+  // ~ Stage II. Do transformation in multi-thread flavor  // 坐标系转换
 #if USE_OPENMP
   TicToc timer_stf;
   StateTransformUsingOpenMp(global_state_vec, global_point_vec,
                             &frenet_state_vec, &fs_point_vec);
   LOG(WARNING) << "[Ssc]OpenMp transform time cost: " << timer_stf.toc()
-               << " ms.";
+               << " ms.";  // 多线程
 #else
   TicToc timer_stf;
   StateTransformSingleThread(global_state_vec, global_point_vec,
@@ -534,7 +543,7 @@ ErrorType SscPlanner::StateTransformForInputData() {
                << " ms.";
 #endif
 
-  // ~ Stage III. Retrieve states and points
+  // ~ Stage III. Retrieve states and points  构建frenet数据格式
   int offset = 0;
   // * Ego vehicle state and vertices
   {
@@ -603,6 +612,7 @@ ErrorType SscPlanner::StateTransformForInputData() {
   return kSuccess;
 }
 
+// 坐标系转换还是耗时啊，可以考虑笛卡尔坐标系
 ErrorType SscPlanner::StateTransformUsingOpenMp(
     const vec_E<State> &global_state_vec, const vec_E<Vec2f> &global_point_vec,
     vec_E<FrenetState> *frenet_state_vec, vec_E<Vec2f> *fs_point_vec) const {
@@ -614,7 +624,7 @@ ErrorType SscPlanner::StateTransformUsingOpenMp(
 
   LOG(WARNING) << "[Ssc]OpenMp - Total number of queries: "
                << state_num + point_num;
-  omp_set_num_threads(4);
+  omp_set_num_threads(4);  // 设置线程为4
   {
 #pragma omp parallel for
     for (int i = 0; i < state_num; ++i) {
@@ -660,6 +670,7 @@ ErrorType SscPlanner::StateTransformSingleThread(
   return kSuccess;
 }
 
+// 验证一个Frenet坐标系下的轨迹是否合法，保证其起点、速度与初始状态一致，且整条轨迹的曲率不超限
 ErrorType SscPlanner::set_map_interface(SscPlannerMapItf *map_itf) {
   if (map_itf == nullptr) return kIllegalInput;
   map_itf_ = map_itf;
