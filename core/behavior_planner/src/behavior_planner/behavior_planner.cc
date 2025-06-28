@@ -131,7 +131,7 @@ ErrorType BehaviorPlanner::RunOnce() {
 ErrorType BehaviorPlanner::MultiBehaviorJudge(
     const decimal_t previous_desired_vel, LateralBehavior* mpdm_behavior,
     decimal_t* mpdm_desired_velocity) {
-  // * get relevant information
+  // * get relevant information  获取自车和环境相关信息
   common::SemanticVehicleSet semantic_vehicle_set;
   if (map_itf_->GetKeySemanticVehicles(&semantic_vehicle_set) != kSuccess) {
     printf("[MPDM]fail to get key vehicles.\n");
@@ -153,7 +153,7 @@ ErrorType BehaviorPlanner::MultiBehaviorJudge(
   forward_behaviors_.clear();
   surround_trajs_.clear();
 
-  // * collect potential behaviors
+  // * collect potential behaviors 构造候选轨迹集合
   std::vector<LateralBehavior> potential_behaviors{
       common::LateralBehavior::kLaneKeeping};
   if (!potential_lcl_lane_ids_.empty())
@@ -172,7 +172,7 @@ ErrorType BehaviorPlanner::MultiBehaviorJudge(
     }
     decimal_t forward_lane_len =
         std::max(it->second.vehicle.state().velocity * 10.0, 50.0);
-    common::Lane ref_lane;
+    common::Lane ref_lane;  // 为每个语义车辆生成对应的参考线
     if (map_itf_->GetRefLaneForStateByBehavior(
             it->second.vehicle.state(), std::vector<int>(), lat_behavior,
             forward_lane_len, max_backward_len, false, &ref_lane) == kSuccess) {
@@ -314,12 +314,13 @@ ErrorType BehaviorPlanner::OpenloopSimForward(
   }
   return kSuccess;
 }
-
+// 在给定自车行为的前提下，预测自车与周围车的未来轨迹
 ErrorType BehaviorPlanner::SimulateEgoBehavior(
     const common::Vehicle& ego_vehicle, const LateralBehavior& ego_behavior,
     const common::SemanticVehicleSet& semantic_vehicle_set,
     vec_E<common::Vehicle>* traj,
     std::unordered_map<int, vec_E<common::Vehicle>>* surround_trajs) {
+  // 构造自车行为对应的参考线
   const decimal_t max_backward_len = 10.0;
   decimal_t forward_lane_len =
       std::max(ego_vehicle.state().velocity * 10.0, 50.0);
@@ -331,23 +332,24 @@ ErrorType BehaviorPlanner::SimulateEgoBehavior(
     printf("[MPDM]fail to get ego reference lane.\n");
     return kWrongStatus;
   }
-
+  // 构造自车语义车辆
   common::SemanticVehicle ego_semantic_vehicle;
   {
     ego_semantic_vehicle.vehicle = ego_vehicle;
     ego_semantic_vehicle.lane = ego_reflane;
   }
-
+  // 构建预测所需的场景语义集合
   common::SemanticVehicleSet semantic_vehicle_set_tmp = semantic_vehicle_set;
   semantic_vehicle_set_tmp.semantic_vehicles.insert(
       std::make_pair(ego_vehicle.id(), ego_semantic_vehicle));
 
-  // ~ multi-agent forward
+  // ~ multi-agent forward  执行多车轨迹预测
   printf("[MPDM]simulating behavior %d.\n", static_cast<int>(ego_behavior));
   if (MultiAgentSimForward(ego_vehicle.id(), semantic_vehicle_set_tmp, traj,
                            surround_trajs) != kSuccess) {
     printf("[MPDM]multi agent forward under %d failed.\n",
            static_cast<int>(ego_behavior));
+    // 降级回退：开环轨迹预测
     if (OpenloopSimForward(ego_semantic_vehicle, semantic_vehicle_set, traj,
                            surround_trajs) != kSuccess) {
       printf("[MPDM]open loop forward under %d failed.\n",
